@@ -9,3 +9,4 @@ Thumbs.db
 *.log
 coverage/
 dist/
+.vercel/
