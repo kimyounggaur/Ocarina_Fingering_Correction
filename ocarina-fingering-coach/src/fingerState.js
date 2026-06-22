@@ -1,4 +1,9 @@
 import { DETECTABLE_HOLES } from "./ocarinaData.js";
+import { evaluateCameraPlacement } from "./cameraGuide.js";
+import { applyFingeringPrior } from "./fingeringPrior.js";
+import { extractAllFingerFeatures } from "./landmarkFeatureExtractor.js";
+import { classifyPressLiftFrame } from "./pressLiftClassifier.js";
+import { smoothFrame } from "./temporalSmoothing.js";
 
 const FINGER_LANDMARKS = {
   2: { mcp: 5, pip: 6, dip: 7, tip: 8 },
@@ -146,4 +151,38 @@ export function handsVisibleCount(results) {
 export function stateConfidence(state) {
   const known = DETECTABLE_HOLES.filter((holeId) => state?.[holeId] === 0 || state?.[holeId] === 1).length;
   return known / DETECTABLE_HOLES.length;
+}
+
+export function classifyFrameWithDiagnostics(
+  results,
+  calibration,
+  previousState = {},
+  note = null,
+  nowMs = performance.now(),
+  options = {},
+) {
+  const cameraGuide = evaluateCameraPlacement(results, options.videoSize);
+  const frameFeatures = extractAllFingerFeatures(results);
+  const observations = classifyPressLiftFrame(frameFeatures, calibration);
+  const smoothed = smoothFrame(
+    previousState?.smoothing ? { fingerStates: previousState.smoothing } : previousState,
+    observations,
+    nowMs,
+    { cameraGuide },
+  );
+  const priorAdjusted = applyFingeringPrior({
+    note,
+    observations: smoothed,
+    stableState: smoothed.holes,
+    previousState: previousState?.holes ?? previousState,
+  });
+
+  return {
+    holes: priorAdjusted.holes,
+    diagnostics: priorAdjusted.diagnostics,
+    cameraGuide,
+    frameFeatures,
+    observations,
+    smoothing: smoothed.fingerStates,
+  };
 }

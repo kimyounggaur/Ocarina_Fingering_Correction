@@ -1,4 +1,7 @@
-export const CALIBRATION_STORAGE_KEY = "ocarinaCoach.calibration.v1";
+import { buildPressLiftCalibration } from "./pressLiftClassifier.js";
+
+export const CALIBRATION_STORAGE_KEY = "ocarinaCoach.calibration.v2";
+const LEGACY_CALIBRATION_STORAGE_KEY = "ocarinaCoach.calibration.v1";
 
 export function averageFeatures(samples) {
   const sums = {};
@@ -17,37 +20,58 @@ export function averageFeatures(samples) {
   );
 }
 
-export function buildCalibration(downSamples, upSamples) {
-  const down = averageFeatures(downSamples);
-  const up = averageFeatures(upSamples);
-  const thresholds = {};
+export function averageFeatureVectors(samples) {
+  const sums = {};
+  const counts = {};
 
-  for (const holeId of Object.keys({ ...down, ...up })) {
-    if (!Number.isFinite(down[holeId]) || !Number.isFinite(up[holeId])) continue;
-    const gap = Math.abs(down[holeId] - up[holeId]);
-    thresholds[holeId] = {
-      down: down[holeId],
-      up: up[holeId],
-      threshold: (down[holeId] + up[holeId]) / 2,
-      downIsHigher: down[holeId] > up[holeId],
-      margin: Math.max(gap * 0.12, 0.01),
-    };
+  for (const sample of samples) {
+    for (const [holeId, features] of Object.entries(sample ?? {})) {
+      if (!features || typeof features !== "object") continue;
+      sums[holeId] ??= {};
+      counts[holeId] ??= {};
+      for (const [key, value] of Object.entries(features)) {
+        if (!Number.isFinite(value)) continue;
+        sums[holeId][key] = (sums[holeId][key] ?? 0) + value;
+        counts[holeId][key] = (counts[holeId][key] ?? 0) + 1;
+      }
+    }
   }
 
+  return Object.fromEntries(
+    Object.entries(sums).map(([holeId, featureSums]) => [
+      holeId,
+      Object.fromEntries(
+        Object.entries(featureSums).map(([key, value]) => [key, value / counts[holeId][key]]),
+      ),
+    ]),
+  );
+}
+
+export function buildCalibration(downSamples, upSamples) {
+  const classifierCalibration = buildPressLiftCalibration(downSamples, upSamples);
+
   return {
+    version: 2,
     createdAt: new Date().toISOString(),
-    holes: thresholds,
+    classifier: classifierCalibration.classifier,
+    holes: classifierCalibration.holes,
   };
 }
 
 export function isCalibrationReady(calibration, holeIds) {
-  return Boolean(calibration?.holes) && holeIds.every((holeId) => calibration.holes[holeId]);
+  return (
+    calibration?.version === 2 &&
+    calibration?.classifier === "press-lift-v1" &&
+    Boolean(calibration?.holes) &&
+    holeIds.every((holeId) => calibration.holes[holeId])
+  );
 }
 
 export function loadCalibration(storage = globalThis.localStorage) {
   try {
     const raw = storage?.getItem(CALIBRATION_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : null;
+    const parsed = raw ? JSON.parse(raw) : null;
+    return parsed?.version === 2 && parsed?.classifier === "press-lift-v1" ? parsed : null;
   } catch {
     return null;
   }
@@ -59,6 +83,7 @@ export function saveCalibration(calibration, storage = globalThis.localStorage) 
 
 export function clearCalibration(storage = globalThis.localStorage) {
   storage?.removeItem(CALIBRATION_STORAGE_KEY);
+  storage?.removeItem(LEGACY_CALIBRATION_STORAGE_KEY);
 }
 
 export function createCalibrationWorkflow({ durationMs = 2000 } = {}) {

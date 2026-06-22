@@ -84,6 +84,20 @@ function ambiguityMessage(ids = []) {
   return labels ? `※ 이 손모양은 ${labels}과 같게 보여요. 입김이나 엄지구멍으로 구분합니다.` : "";
 }
 
+function isLowConfidence(holeId, diagnostics = {}) {
+  const diagnostic = diagnostics?.[holeId];
+  return (
+    diagnostic?.confidence < 0.55 ||
+    diagnostic?.stableState === "pending" ||
+    diagnostic?.reasons?.some((reason) => reason.includes("visibility") || reason.includes("pending"))
+  );
+}
+
+function pendingMessageFor(holeId) {
+  const label = FINGER_LABELS_KO[holeId] ?? holeId;
+  return `판정이 불안정해요: ${label} 손끝이 보이게 조금 더 들어 주세요`;
+}
+
 export function breathHint(note) {
   const breath = note?.breath ?? 0;
   const hints = {
@@ -96,7 +110,7 @@ export function breathHint(note) {
   return `입김 ${breath}/5 - ${hints[breath] ?? "선택한 음에 맞게"}`;
 }
 
-export function buildFeedback(note, current) {
+export function buildFeedback(note, current, diagnostics = {}) {
   const diff = diffHoles(note.detectable, current);
   if (isAllOk(diff)) {
     return {
@@ -107,6 +121,18 @@ export function buildFeedback(note, current) {
         breathHint(note),
         ambiguityMessage(note.ambiguousWith),
       ].filter(Boolean),
+    };
+  }
+
+  const unstableFixes = summarizeDiff(diff)
+    .filter(({ holeId, state }) => (state === "close" || state === "open") && isLowConfidence(holeId, diagnostics))
+    .sort(sortFixes)
+    .slice(0, 2);
+  if (unstableFixes.length > 0) {
+    return {
+      status: "pending",
+      diff,
+      messages: unstableFixes.map(({ holeId }) => pendingMessageFor(holeId)),
     };
   }
 

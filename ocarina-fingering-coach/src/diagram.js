@@ -8,6 +8,7 @@ const COLORS = {
   ok: "#168A53",
   wrong: "#C83B3B",
   pending: "#8A8378",
+  uncertain: "#B56B1F",
   woodA: "#E7A877",
   woodB: "#C97B4A",
 };
@@ -21,24 +22,29 @@ function baseFill(holeId, value) {
   return isLeftHole(holeId) ? COLORS.left : COLORS.right;
 }
 
-function statusStroke(status) {
+function statusStroke(status, diagnostic) {
+  if (diagnostic?.confidence < 0.55 && (status === "close" || status === "open")) return COLORS.uncertain;
   if (status === "ok") return COLORS.ok;
   if (status === "close" || status === "open") return COLORS.wrong;
   if (status === "pending") return COLORS.pending;
   return "rgba(0,0,0,0.18)";
 }
 
-function holeSvg(hole, note, current, diff) {
+function holeSvg(hole, note, current, diff, diagnostics) {
   const target = note?.holes?.[hole.id] ?? 0;
   const status = diff?.[hole.id] ?? (DETECTABLE_HOLES.includes(hole.id) ? "pending" : "");
+  const diagnostic = diagnostics?.[hole.id];
   const currentValue = current?.[hole.id];
   const inactive = !hole.detectable ? 0.45 : 1;
-  const stroke = statusStroke(status);
+  const stroke = statusStroke(status, diagnostic);
   const strokeWidth = hole.detectable ? 7 : 2;
+  const confidence = Number.isFinite(diagnostic?.confidence) ? diagnostic.confidence : 0.9;
+  const overlayOpacity = Math.max(0.35, Math.min(0.95, 0.35 + confidence * 0.6));
+  const dash = status === "pending" || diagnostic?.stableState === "pending" ? ` stroke-dasharray="10 8"` : "";
   const base = `<circle cx="${hole.cx}" cy="${hole.cy}" r="${hole.r}" fill="${baseFill(hole.id, target)}" stroke="${target === 0 ? COLORS.stroke : "#00000022"}" stroke-width="${target === 0 ? 2 : 1}" opacity="${inactive}"/>`;
   const overlay =
     hole.detectable && (currentValue === 0 || currentValue === 1)
-      ? `<circle cx="${hole.cx}" cy="${hole.cy}" r="${hole.r + 7}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" opacity="0.9"/>`
+      ? `<circle cx="${hole.cx}" cy="${hole.cy}" r="${hole.r + 7}" fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" opacity="${overlayOpacity}"${dash}/>`
       : "";
   const half = target === 0.5 ? `<text x="${hole.cx}" y="${hole.cy + 6}" text-anchor="middle" font-size="${hole.r}" font-weight="800" fill="#2B2B2B">½</text>` : "";
   const stateLabel =
@@ -79,13 +85,13 @@ export function breathGauge(note) {
   }).join("");
 }
 
-export function renderDiagram(container, note, current = {}, diff = {}) {
+export function renderDiagram(container, note, current = {}, diff = {}, diagnostics = {}) {
   if (!container || !note) return;
   const front = HOLES_12.filter((hole) => hole.side === "front")
-    .map((hole) => holeSvg(hole, note, current, diff))
+    .map((hole) => holeSvg(hole, note, current, diff, diagnostics))
     .join("");
   const back = HOLES_12.filter((hole) => hole.side === "back")
-    .map((hole) => holeSvg(hole, note, current, diff))
+    .map((hole) => holeSvg(hole, note, current, diff, diagnostics))
     .join("");
 
   container.innerHTML = `

@@ -67,6 +67,25 @@ test("buildFeedback prioritizes holes to close before holes to open", () => {
   assert.equal(feedback.messages[1], "오른손 약지를 떼세요");
 });
 
+test("buildFeedback softens low-confidence mismatches into pending guidance", () => {
+  const current = {
+    ...targetDo.detectable,
+    R4: 1,
+  };
+  const diagnostics = {
+    R4: {
+      confidence: 0.42,
+      reasons: ["low-visibility"],
+    },
+  };
+
+  const feedback = buildFeedback(targetDo, current, diagnostics);
+
+  assert.equal(feedback.status, "pending");
+  assert.match(feedback.messages[0], /판정이 불안정/);
+  assert.match(feedback.messages[0], /오른손 약지/);
+});
+
 test("buildFeedback emits a hold message and ambiguity hint when all holes match", () => {
   const note = {
     ...targetDo,

@@ -5,6 +5,11 @@ import {
   isAllOk,
 } from "./compare.js";
 import {
+  buildCameraGuideMessages,
+  evaluateCameraPlacement,
+  shouldBlockClassification,
+} from "./cameraGuide.js";
+import {
   clearCalibration,
   createCalibrationWorkflow,
   isCalibrationReady,
@@ -12,19 +17,22 @@ import {
   saveCalibration,
 } from "./calibration.js";
 import {
-  createFingerSmoother,
-  classifyFeatures,
-  extractFeaturesFromResults,
   handsVisibleCount,
   stateConfidence,
 } from "./fingerState.js";
+import { applyFingeringPrior } from "./fingeringPrior.js";
 import { detectHands, createHandLandmarker, drawHandOverlay, startCamera, syncCanvasToVideo } from "./handTracking.js";
 import { renderDiagram } from "./diagram.js";
+import { extractAllFingerFeatures } from "./landmarkFeatureExtractor.js";
 import { DETECTABLE_HOLES, MVP_NOTES, getNote } from "./ocarinaData.js";
+import { classifyPressLiftFrame } from "./pressLiftClassifier.js";
+import { createTemporalSmoother } from "./temporalSmoothing.js";
 import {
   populateNoteButtons,
   populateTypeSelect,
   qs,
+  renderCameraGuide,
+  renderDiagnosticsPanel,
   renderFeedback,
   renderFingerState,
   setProgress,
@@ -48,6 +56,9 @@ const els = {
   trackingStatus: qs("#trackingStatus"),
   calibrationStatus: qs("#calibrationStatus"),
   progress: qs("#holdProgress"),
+  cameraGuide: qs("#cameraGuidePanel"),
+  diagnosticsToggle: qs("#diagnosticsToggle"),
+  diagnosticsPanel: qs("#diagnosticsPanel"),
   nextButton: qs("#nextButton"),
   autoNext: qs("#autoNext"),
   voiceToggle: qs("#voiceToggle"),
@@ -59,11 +70,15 @@ const app = {
   landmarker: null,
   calibration: loadCalibration(),
   calibrationFlow: createCalibrationWorkflow({ durationMs: 2000 }),
-  smoother: createFingerSmoother(),
+  smoother: createTemporalSmoother(),
   hold: createHoldProgress(1500),
   typeId: "hole12",
   noteId: "do",
   currentState: {},
+  previousState: {},
+  stateDiagnostics: {},
+  cameraGuide: null,
+  diagnosticsVisible: false,
   thumbState: { L1: 1, R1: 1, thumbSource: "manual" },
   lastSpoken: "",
   lastPassNoteId: null,
@@ -90,8 +105,8 @@ function selectNextNote() {
 function calibrationText() {
   if (isCalibrationReady(app.calibration, DETECTABLE_HOLES)) return "캘리브레이션 완료";
   const phase = app.calibrationFlow.getPhase();
-  if (phase === "down") return "① 모두 막은 모양을 유지하세요";
-  if (phase === "up") return "② 모두 편 모양을 유지하세요";
+  if (phase === "down") return "① 여덟 손가락을 모두 막은 자세를 유지하세요";
+  if (phase === "up") return "② 여덟 손가락을 모두 편 자세를 유지하세요";
   return "캘리브레이션 필요";
 }
 
@@ -116,6 +131,10 @@ async function start() {
 function handleCalibration(features) {
   const phase = app.calibrationFlow.getPhase();
   if (phase === "idle") return;
+  if (shouldBlockClassification(app.cameraGuide)) {
+    renderFeedback(els.feedback, buildCameraGuideMessages(app.cameraGuide), "error");
+    return;
+  }
 
   const progress = app.calibrationFlow.addSample(features);
   setProgress(els.progress, progress.ratio);
@@ -140,15 +159,23 @@ function mergeThumbState(state) {
 function renderAppFrame(results = null) {
   const note = currentNote();
   const diff = diffHoles(note.detectable, app.currentState);
-  const feedback = isCalibrationReady(app.calibration, DETECTABLE_HOLES)
-    ? buildFeedback(note, app.currentState)
-    : { status: "idle", messages: ["캘리브레이션을 먼저 진행하세요", "① 막은 모양 2초, ② 편 모양 2초를 저장합니다"] };
+  let feedback;
+  if (shouldBlockClassification(app.cameraGuide)) {
+    feedback = { status: "error", messages: buildCameraGuideMessages(app.cameraGuide) };
+  } else if (isCalibrationReady(app.calibration, DETECTABLE_HOLES)) {
+    feedback = buildFeedback(note, app.currentState, app.stateDiagnostics);
+  } else {
+    feedback = { status: "idle", messages: ["캘리브레이션을 먼저 진행하세요", "① 막은 자세 2초, ② 편 자세 2초를 저장합니다"] };
+  }
 
-  renderDiagram(els.diagram, note, app.currentState, diff);
-  renderFingerState(els.fingerState, app.currentState);
+  renderDiagram(els.diagram, note, app.currentState, diff, app.stateDiagnostics);
+  renderFingerState(els.fingerState, app.currentState, app.stateDiagnostics);
+  renderCameraGuide(els.cameraGuide, app.cameraGuide);
+  renderDiagnosticsPanel(els.diagnosticsPanel, app.stateDiagnostics, app.diagnosticsVisible);
   renderFeedback(els.feedback, feedback.messages, feedback.status);
   setText(els.calibrationStatus, calibrationText());
-  setText(els.trackingStatus, results ? `감지된 손 ${handsVisibleCount(results)}개 · 신뢰도 ${Math.round(stateConfidence(app.currentState) * 100)}%` : "손 추적 대기");
+  const cameraScore = app.cameraGuide ? ` · 배치 ${Math.round(app.cameraGuide.score * 100)}%` : "";
+  setText(els.trackingStatus, results ? `감지된 손 ${handsVisibleCount(results)}개 · 신뢰도 ${Math.round(stateConfidence(app.currentState) * 100)}%${cameraScore}` : "손 추적 대기");
 
   const firstMessage = feedback.messages[0];
   if (firstMessage && firstMessage !== app.lastSpoken) {
@@ -176,10 +203,23 @@ function loop() {
   const results = detectHands(app.landmarker, els.video);
   if (results) {
     drawHandOverlay(els.canvas, results);
-    const features = extractFeaturesFromResults(results);
-    handleCalibration(features);
-    const rawState = classifyFeatures(features, app.calibration, app.currentState);
-    app.currentState = mergeThumbState(app.smoother.update(rawState));
+    app.cameraGuide = evaluateCameraPlacement(results, { width: els.canvas.width, height: els.canvas.height });
+    const frameFeatures = extractAllFingerFeatures(results);
+    handleCalibration(frameFeatures);
+
+    if (isCalibrationReady(app.calibration, DETECTABLE_HOLES) && !shouldBlockClassification(app.cameraGuide)) {
+      const observations = classifyPressLiftFrame(frameFeatures, app.calibration);
+      const smoothed = app.smoother.update(observations, performance.now(), app.cameraGuide);
+      const priorAdjusted = applyFingeringPrior({
+        note: currentNote(),
+        observations: smoothed,
+        stableState: smoothed.holes,
+        previousState: app.previousState,
+      });
+      app.previousState = app.currentState;
+      app.currentState = mergeThumbState(priorAdjusted.holes);
+      app.stateDiagnostics = priorAdjusted.diagnostics;
+    }
   }
 
   const note = currentNote();
@@ -212,6 +252,13 @@ function boot() {
     clearCalibration();
     app.calibration = null;
     app.smoother.reset();
+    app.stateDiagnostics = {};
+    renderAppFrame();
+  });
+  els.diagnosticsToggle.addEventListener("click", () => {
+    app.diagnosticsVisible = !app.diagnosticsVisible;
+    els.diagnosticsToggle.classList.toggle("is-on", app.diagnosticsVisible);
+    els.diagnosticsToggle.setAttribute("aria-pressed", String(app.diagnosticsVisible));
     renderAppFrame();
   });
   els.nextButton.addEventListener("click", selectNextNote);

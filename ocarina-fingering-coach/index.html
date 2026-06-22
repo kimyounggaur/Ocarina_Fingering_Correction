@@ -42,6 +42,7 @@
           <span id="trackingStatus">손 추적 대기</span>
           <span id="calibrationStatus">캘리브레이션 확인 중</span>
         </div>
+        <div id="cameraGuidePanel" class="camera-guide" data-level="idle" aria-live="polite"></div>
         <div id="fingerState" class="finger-state" aria-label="감지된 손가락 상태"></div>
       </section>
 
@@ -59,6 +60,7 @@
             <input id="autoNext" type="checkbox" checked />
             <span>자동 다음</span>
           </label>
+          <button id="diagnosticsToggle" type="button" class="ghost icon-toggle" aria-pressed="false">진단</button>
         </div>
 
         <div id="diagram" class="diagram"></div>
@@ -73,6 +75,7 @@
 
         <div id="feedback" class="feedback" data-status="idle"></div>
         <div id="holdProgress" class="hold-progress" aria-hidden="true"></div>
+        <div id="diagnosticsPanel" class="diagnostics-panel" hidden></div>
       </section>
     </main>
 

@@ -38,13 +38,77 @@ export function populateNoteButtons(container, activeId, onSelect) {
   });
 }
 
-export function renderFingerState(container, state = {}) {
+function confidenceLabel(diagnostic) {
+  if (!diagnostic || !Number.isFinite(diagnostic.confidence)) return "";
+  return `${Math.round(diagnostic.confidence * 100)}%`;
+}
+
+function pendingReason(diagnostic) {
+  const reasons = diagnostic?.reasons ?? [];
+  if (reasons.some((reason) => reason.includes("visibility"))) return "손끝 가림";
+  if (reasons.some((reason) => reason.includes("camera"))) return "카메라 배치";
+  if (reasons.some((reason) => reason.includes("prior"))) return "문법 보정";
+  if (diagnostic?.stableState === "pending") return "판정 보류";
+  return "";
+}
+
+export function renderFingerState(container, state = {}, diagnostics = {}) {
   container.innerHTML = DETECTABLE_HOLES.map((holeId) => {
     const value = state[holeId];
+    const diagnostic = diagnostics[holeId];
     const label = FINGER_LABELS_KO[holeId];
     const display = value === 1 ? "●" : value === 0 ? "○" : "-";
     const statusClass = value === 1 ? "is-closed" : value === 0 ? "is-open" : "is-pending";
-    return `<span class="finger-chip ${statusClass}"><b>${label}</b><em>${display}</em></span>`;
+    const confidence = confidenceLabel(diagnostic);
+    const reason = pendingReason(diagnostic);
+    return `<span class="finger-chip ${statusClass}" title="${reason}">
+      <b>${label}</b>
+      <span>
+        <em>${display}</em>
+        ${confidence ? `<small>${confidence}</small>` : ""}
+      </span>
+      ${reason ? `<i>${reason}</i>` : ""}
+    </span>`;
+  }).join("");
+}
+
+export function renderCameraGuide(container, evaluation) {
+  if (!container) return;
+  if (!evaluation) {
+    container.dataset.level = "idle";
+    container.innerHTML = "";
+    return;
+  }
+
+  const messages = evaluation.messages?.length ? evaluation.messages : ["카메라 배치가 안정적입니다"];
+  container.dataset.level = evaluation.level;
+  container.innerHTML = `
+    <strong>카메라 배치 ${Math.round(evaluation.score * 100)}%</strong>
+    ${messages.map((message) => `<span>${message}</span>`).join("")}
+  `;
+}
+
+export function renderDiagnosticsPanel(container, diagnostics = {}, visible = false) {
+  if (!container) return;
+  container.hidden = !visible;
+  if (!visible) {
+    container.innerHTML = "";
+    return;
+  }
+
+  container.innerHTML = DETECTABLE_HOLES.map((holeId) => {
+    const diagnostic = diagnostics[holeId] ?? {};
+    const confidence = Number.isFinite(diagnostic.confidence) ? Math.round(diagnostic.confidence * 100) : 0;
+    const pressProb = Number.isFinite(diagnostic.pressProb) ? Math.round(diagnostic.pressProb * 100) : null;
+    const reasons = diagnostic.reasons?.length ? diagnostic.reasons.join(", ") : "-";
+    return `<section class="diagnostic-item">
+      <strong>${holeId} · ${FINGER_LABELS_KO[holeId]}</strong>
+      <span>raw: ${diagnostic.rawState ?? "pending"}${pressProb === null ? "" : ` ${pressProb}%`}</span>
+      <span>stable: ${diagnostic.stableState ?? "pending"}</span>
+      <span>confidence: ${confidence}%</span>
+      <span>held: ${Math.round(diagnostic.heldMs ?? 0)}ms</span>
+      <span>reasons: ${reasons}</span>
+    </section>`;
   }).join("");
 }
 
