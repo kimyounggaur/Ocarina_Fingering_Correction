@@ -1,0 +1,11 @@
+{
+  "name": "ocarina-fingering-coach",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "build:data": "node tools/build-fingering-data.mjs",
+    "serve": "npx --yes serve .. -l 4173"
+  }
+}
